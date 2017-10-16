@@ -36,16 +36,22 @@
 
 #include "shmem_executor.hpp"
 
-void hello(int idx)
+void hello(int idx, remote_reference<int> shared_parameter)
 {
-  std::cout << "hello world from processing element " << idx << std::endl;
+  std::cout << "hello world from processing element " << idx << ", received " << shared_parameter << std::endl;
+  assert(shared_parameter == 13);
+}
+
+int factory()
+{
+  return 13;
 }
 
 int main()
 {
   shmem_executor exec;
 
-  exec.execute(hello, 4);
+  exec.execute(hello, 2, factory);
 
   std::cout << "OK" << std::endl;
 }

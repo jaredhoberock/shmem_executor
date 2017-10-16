@@ -26,64 +26,59 @@
 
 #pragma once
 
+#include <type_traits>
 #include <shmem.h>
 
-#include "new_process_executor.hpp"
-#include "remote_ptr.hpp"
+#include "pointer_adaptor.hpp"
 
-static int shared_argument;
+#define __REQUIRES(...) typename std::enable_if<(__VA_ARGS__)>::type* = nullptr
 
-class shmem_executor
+class remote_memory_accessor
 {
-  private:
-    template<class Function, class Factory>
-    struct initialize_and_invoke_with_index_and_then_finalize
-    {
-      mutable Function f;
-      mutable Factory shared_factory;
-
-      void operator()() const
-      {
-        shmem_init();
-
-        if(shmem_my_pe() == 0)
-        {
-          shared_argument = shared_factory();
-        }
-
-        shmem_barrier_all();
-
-        remote_ptr<int> remote_shared_argument(&shared_argument, 0);
-
-        f(shmem_my_pe(), *remote_shared_argument);
-
-        shmem_finalize();
-      }
-
-      template<class OutputArchive>
-      friend void serialize(OutputArchive& ar, const initialize_and_invoke_with_index_and_then_finalize& self)
-      {
-        ar(self.f);
-        ar(self.shared_factory);
-      }
-
-      template<class InputArchive>
-      friend void deserialize(InputArchive& ar, initialize_and_invoke_with_index_and_then_finalize& self)
-      {
-        ar(self.f);
-        ar(self.shared_factory);
-      }
-    };
-
   public:
-    template<class Function, class SharedFactory>
-    void execute(Function f, size_t n, SharedFactory shared_factory) const
-    {
-      std::string n_as_string = std::to_string(n);
-      std::array<const char*, 4> argv = {"/home/jhoberock/dev/openshmem-am-root/bin/oshrun", "-n", n_as_string.c_str(), nullptr};
-      new_process_executor exec(argv[0], argv);
+    remote_memory_accessor(int processing_element)
+      : processing_element_(processing_element)
+    {}
 
-      exec.execute(initialize_and_invoke_with_index_and_then_finalize<Function, SharedFactory>{f, shared_factory});
+    int processing_element() const
+    {
+      return processing_element_;
     }
+
+    template<class T,
+             __REQUIRES(
+               std::is_default_constructible<T>::value
+               //and std::is_trivially_copyable<T>::value
+            )>
+    T load(const T* ptr) const
+    {
+      T result;
+      shmem_getmem(&result, ptr, sizeof(T), processing_element());
+      return result;
+    }
+
+    template<class T, __REQUIRES(std::is_trivially_copyable<T>::value)>
+    void store(T* ptr, const T& value) const
+    {
+      shmem_putmem(ptr, &value, sizeof(T), processing_element());
+    }
+
+  private:
+    int processing_element_;
 };
 
+template<class T>
+class remote_ptr : public pointer_adaptor<T, remote_memory_accessor>
+{
+  private:
+    using super_t = pointer_adaptor<T, remote_memory_accessor>;
+
+  public:
+    remote_ptr(T* address, int processing_element)
+      : super_t(address, remote_memory_accessor(processing_element))
+    {}
+};
+
+template<class T>
+using remote_reference = typename remote_ptr<T>::reference;
+                
