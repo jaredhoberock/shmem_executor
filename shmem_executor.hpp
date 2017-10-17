@@ -123,7 +123,7 @@ class shmem_executor
     void bulk_execute(Function f, size_t n, SharedFactory shared_factory) const
     {
       std::string n_as_string = std::to_string(n);
-      std::array<const char*, 4> argv = {"/home/jhoberock/dev/openshmem-am-root/bin/oshrun", "-n", n_as_string.c_str(), nullptr};
+      std::array<const char*, 4> argv = {"oshrun", "-n", n_as_string.c_str(), nullptr};
       new_process_executor exec(argv[0], argv);
 
       exec.execute(bulk_oneway_functor<Function, SharedFactory>{f, shared_factory});

@@ -140,7 +140,7 @@ class process_context
       args.push_back(nullptr);
 
       // spawn the process
-      int error = posix_spawn(&spawnee_id, launcher_program_filename, nullptr, nullptr, const_cast<char**>(args.data()), spawnee_environment_view.data());
+      int error = posix_spawnp(&spawnee_id, launcher_program_filename, nullptr, nullptr, const_cast<char**>(args.data()), spawnee_environment_view.data());
       if(error)
       {
         throw std::system_error(errno, std::generic_category(), "process_context::execute(): Error after posix_spawn.");
