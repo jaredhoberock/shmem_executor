@@ -124,7 +124,6 @@ class process_context
       set_variable(spawnee_environment, "EXECUTE_ACTIVE_MESSAGE_BEFORE_MAIN", to_string(message));
       auto spawnee_environment_view = environment_view(spawnee_environment);
 
-      pid_t spawnee_id;
 
       // concatenate launchee program filename onto launcher_argv
       std::vector<const char*> args;
@@ -140,6 +139,7 @@ class process_context
       args.push_back(nullptr);
 
       // spawn the process
+      pid_t spawnee_id;
       int error = posix_spawnp(&spawnee_id, launcher_program_filename, nullptr, nullptr, const_cast<char**>(args.data()), spawnee_environment_view.data());
       if(error)
       {
