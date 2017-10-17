@@ -30,45 +30,88 @@
 
 #include "new_process_executor.hpp"
 #include "remote_ptr.hpp"
-
-static int shared_argument;
+#include "uninitialized.hpp"
 
 class shmem_executor
 {
   private:
-    template<class Function, class Factory>
-    struct initialize_and_invoke_with_index_and_then_finalize
+    template<class Function, class SharedFactory>
+    struct bulk_oneway_functor
     {
       mutable Function f;
-      mutable Factory shared_factory;
+      mutable SharedFactory shared_factory;
+
+      // XXX in C++17, this would just be a variable template
+      template<class T>
+      struct shared_parameter
+      {
+        static uninitialized<T> value;
+      };
+
+      template<class T, __REQUIRES(std::is_trivially_destructible<T>::value)>
+      static void synchronize_and_destroy_shared_parameter_if(int)
+      {
+        // no-op
+      }
+
+      template<class T, __REQUIRES(!std::is_trivially_destructible<T>::value)>
+      static void synchronize_and_destroy_shared_parameter_if(int rank)
+      {
+        shmem_barrier_all();
+
+        if(rank == 0)
+        {
+          shared_parameter<T>::value.destroy();
+        }
+      }
 
       void operator()() const
       {
+        // construct OpenSHMEM
         shmem_init();
 
-        if(shmem_my_pe() == 0)
+        // compute the type of the shared parameter
+        using shared_parameter_type = typename std::result_of<SharedFactory()>::type;
+
+        // get this processing element's rank
+        int rank = shmem_my_pe();
+
+        // rank 0 initializes the shared parameter as an OpenSHMEM "symmetric" object
+        if(rank == 0)
         {
-          shared_argument = shared_factory();
+          // note that there is only one of these "symmetric" objects per-type, per-process
+          // however, since shmem_executor spawns a process for each agent it creates,
+          // this is safe
+          //
+          // in other words, this function, operator(), is the moral equivalent of main()
+          shared_parameter<shared_parameter_type>::value.emplace(shared_factory());
         }
 
+        // all processing elements wait for the shared_parameter to be constructed
         shmem_barrier_all();
 
-        remote_ptr<int> remote_shared_argument(&shared_argument, 0);
+        // point at PE 0's instance of shared_parameter
+        remote_ptr<int> remote_shared_parameter(&shared_parameter<shared_parameter_type>::value.get(), 0);
 
-        f(shmem_my_pe(), *remote_shared_argument);
+        // invoke f, passing a remote_reference to the shared parameter
+        f(rank, *remote_shared_parameter);
 
+        // synchronize with a barrier and destroy the shared parameter if it has a non-trivial destructor
+        synchronize_and_destroy_shared_parameter_if<shared_parameter_type>(rank);
+
+        // destroy OpenSHMEM
         shmem_finalize();
       }
 
       template<class OutputArchive>
-      friend void serialize(OutputArchive& ar, const initialize_and_invoke_with_index_and_then_finalize& self)
+      friend void serialize(OutputArchive& ar, const bulk_oneway_functor& self)
       {
         ar(self.f);
         ar(self.shared_factory);
       }
 
       template<class InputArchive>
-      friend void deserialize(InputArchive& ar, initialize_and_invoke_with_index_and_then_finalize& self)
+      friend void deserialize(InputArchive& ar, bulk_oneway_functor& self)
       {
         ar(self.f);
         ar(self.shared_factory);
@@ -83,7 +126,12 @@ class shmem_executor
       std::array<const char*, 4> argv = {"/home/jhoberock/dev/openshmem-am-root/bin/oshrun", "-n", n_as_string.c_str(), nullptr};
       new_process_executor exec(argv[0], argv);
 
-      exec.execute(initialize_and_invoke_with_index_and_then_finalize<Function, SharedFactory>{f, shared_factory});
+      exec.execute(bulk_oneway_functor<Function, SharedFactory>{f, shared_factory});
     }
 };
+
+// define the static member variable declared above
+template<class Function, class SharedFactory>
+template<class T>
+uninitialized<T> shmem_executor::bulk_oneway_functor<Function,SharedFactory>::shared_parameter<T>::value;
 
