@@ -43,6 +43,7 @@
 #include <fcntl.h>
 
 #include "serialization.hpp"
+#include "optional.hpp"
 
 
 class file_descriptor_ostream : public std::ostream
@@ -244,8 +245,8 @@ class interprocess_future
   private:
     int file_descriptor_;
     file_descriptor_istream is_;
-    // XXX this should be optional<variant<T,exception_ptr>> rather than unique_ptr<T>
-    std::unique_ptr<T> value_;
+    // XXX this should be optional<variant<T,exception_ptr>> rather than optional<T>
+    optional<T> value_;
 };
 
 
