@@ -51,7 +51,7 @@ int main()
 {
   shmem_executor exec;
 
-  exec.execute(hello, 2, factory);
+  exec.bulk_execute(hello, 2, factory);
 
   std::cout << "OK" << std::endl;
 }
