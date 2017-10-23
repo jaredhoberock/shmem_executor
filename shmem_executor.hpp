@@ -31,6 +31,8 @@
 #include "new_process_executor.hpp"
 #include "remote_ptr.hpp"
 #include "uninitialized.hpp"
+#include "interprocess_future.hpp"
+#include "socket.hpp"
 
 class shmem_executor
 {
@@ -91,7 +93,7 @@ class shmem_executor
         shmem_barrier_all();
 
         // point at PE 0's instance of shared_parameter
-        remote_ptr<int> remote_shared_parameter(&shared_parameter<shared_parameter_type>::value.get(), 0);
+        remote_ptr<shared_parameter_type> remote_shared_parameter(&shared_parameter<shared_parameter_type>::value.get(), 0);
 
         // invoke f, passing a remote_reference to the shared parameter
         f(rank, *remote_shared_parameter);
@@ -127,6 +129,115 @@ class shmem_executor
       new_process_executor exec(argv[0], argv);
 
       exec.execute(bulk_oneway_functor<Function, SharedFactory>{f, shared_factory});
+    }
+
+  private:
+    // a pair_factory wraps two other factories
+    // and returns a pair containings their results
+    template<class Factory1, class Factory2>
+    struct pair_factory
+    {
+      mutable Factory1 factory1;
+      mutable Factory2 factory2;
+
+      std::pair<typename std::result_of<Factory1()>::type,typename std::result_of<Factory2()>::type>
+        operator()() const
+      {
+        return std::make_pair(factory1(), factory2());
+      }
+
+      template<class OutputArchive>
+      friend void serialize(OutputArchive& ar, const pair_factory& self)
+      {
+        ar(self.factory1, self.factory2);
+      }
+
+      template<class InputArchive>
+      friend void deserialize(InputArchive& ar, pair_factory& self)
+      {
+        ar(self.factory1, self.factory2);
+      }
+    };
+
+    // twoway_bulk_execute_functor is the functor used in twoway_bulk_execute
+    // which adapts bulk_execute's one-way behavior to implement twoway_bulk_execute's
+    // twoway behavior
+    template<class Result, class Shared, class Function>
+    struct twoway_bulk_execute_functor
+    {
+      mutable Function user_function;
+      std::string hostname;
+      int port;
+
+      void operator()(size_t rank, remote_reference<std::pair<Result,Shared>> result_and_shared) const
+      {
+        // our functor receives a single shared parameter as a std::pair
+        // get a raw pointer to the pair which is local to processing element 0
+        std::pair<Result,Shared>* raw_ptr_to_pair = (&result_and_shared).get();
+
+        // get raw pointers to the std::pair's two member variables
+        Result* raw_ptr_to_result = &(raw_ptr_to_pair->first);
+        Shared* raw_ptr_to_shared = &(raw_ptr_to_pair->second);
+
+        // get remote_ptrs pointing to the result and shared parameter on processing element 0
+        remote_ptr<Result> remote_result(raw_ptr_to_result, 0);
+        remote_ptr<Shared> remote_shared_parameter(raw_ptr_to_shared, 0);
+
+        // call the user function with the result & shared paramteter passed as remote_references
+        // XXX we should catch any exception thrown from this function
+        user_function(rank, *remote_result, *remote_shared_parameter);
+
+        // wait until all processing elements have executed the user_function
+        shmem_barrier_all();
+
+        // rank 0 fulfills the promise
+        if(rank == 0)
+        {
+          write_socket writer(hostname.c_str(), port);
+
+          file_descriptor_ostream os(writer.get());
+
+          interprocess_promise<Result> promise(os);
+
+          promise.set_value(*remote_result);
+        }
+      }
+
+      template<class OutputArchive>
+      friend void serialize(OutputArchive& ar, const twoway_bulk_execute_functor& self)
+      {
+        ar(self.user_function, self.hostname, self.port);
+      }
+
+      template<class InputArchive>
+      friend void deserialize(InputArchive& ar, twoway_bulk_execute_functor& self)
+      {
+        ar(self.user_function, self.hostname, self.port);
+      }
+    };
+
+  public:
+    template<class Function, class ResultFactory, class SharedFactory>
+    interprocess_future<typename std::result_of<ResultFactory()>::type>
+    twoway_bulk_execute(Function f, size_t n, ResultFactory result_factory, SharedFactory shared_factory) const
+    {
+      // get the name of this machine
+      char hostname[HOST_NAME_MAX];
+      if(gethostname(hostname, sizeof(hostname)) == -1)
+      {
+        throw std::system_error(errno, std::system_category(), "shmem_executor::twoway_bulk_execute(): Error after gethostname()");
+      }
+
+      int port = 71342;
+
+      using result_type = typename std::result_of<ResultFactory()>::type;
+      using shared_parameter_type = typename std::result_of<SharedFactory()>::type;
+
+      // execute start the client process using the one-way function
+      this->bulk_execute(twoway_bulk_execute_functor<result_type,shared_parameter_type,Function>{f, hostname, port}, n, pair_factory<ResultFactory,SharedFactory>{result_factory, shared_factory});
+
+      // create a future corresponding to the client
+      return interprocess_future<result_type>{read_socket(port).release()};
     }
 };
 
