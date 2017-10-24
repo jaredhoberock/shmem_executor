@@ -45,6 +45,7 @@ void hello(int idx, remote_reference<int> shared_parameter)
 void twoway_hello(int idx, remote_reference<int> result, remote_reference<int> shared_parameter)
 {
   std::cout << "hello world from processing element " << idx << ", received " << shared_parameter << std::endl;
+  assert(shared_parameter == 13);
 
   if(idx == 0)
   {
