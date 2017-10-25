@@ -47,6 +47,14 @@ class listening_socket
         throw std::system_error(errno, std::system_category(), "listening_socket ctor: Error after socket()");
       }
 
+      // this ensures that closing the socket allows the port to be reused immediately
+      // if other processes were using the port previously, the bind() call below may fail without this option set
+      int yes = 1;
+      if(setsockopt(file_descriptor_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
+      {
+        throw std::system_error(errno, std::system_category(), "listening_socket ctor: Error after setsockopt()");
+      }
+
       sockaddr_in server_address{};
 
       server_address.sin_family = AF_INET;
