@@ -169,6 +169,43 @@ class shmem_executor
       std::string hostname;
       int port;
 
+      // this function implements a cooperative logical or reduction
+      // each agent contributes a value as a parameter, and this function
+      // return the logical or of those values as its result
+      // this function implicitly introduces a barrier as a side effect of
+      static bool cooperative_any(bool value)
+      {
+        // assign our value to a symmetric (i.e., static) value
+        static int symmetric_value = value;
+
+        // this (symmetric) variable will store the result
+        static int symmetric_result;
+
+        // scratch space for the reduction
+        static std::array<int,  SHMEM_REDUCE_MIN_WRKDATA_SIZE> symmetric_work_array1;
+        static std::array<long, SHMEM_REDUCE_SYNC_SIZE>        symmetric_work_array2;
+
+        // the second work_array needs to be initialized to this particular value
+        // XXX see if we can eliminate this by initializing this before anything else happens
+        //     the call to shmem_int_or_to_all() below will restore this array's value
+        symmetric_work_array2.fill(SHMEM_SYNC_VALUE);
+
+        // wait for work_array2 to fill
+        shmem_barrier_all();
+
+        // execute the reduction
+        shmem_int_or_to_all(&symmetric_result,             // dest: where the result will be stored
+                            &symmetric_value,              // source: this processing element's contribution
+                            1,                             // nreduce: number of reductions to perform (there is only one)
+                            0,                             // PE_start: the first agent of the group to include in the reduction
+                            0,                             // logPE_stride: 0 => include each contiguous agent beginning at PE_start
+                            shmem_n_pes(),                 // PE_size: the number of agents to include in the reduction (shmem_n_pes() => include all of them)
+                            symmetric_work_array1.data(),  // pWork: symmetric work array (scratch space)
+                            symmetric_work_array2.data()); // pSync: symmetric work array (more scratch space)
+
+        return static_cast<bool>(symmetric_result);
+      }
+
       void operator()(size_t rank, remote_reference<std::pair<Result,Shared>> result_and_shared) const
       {
         // our functor receives a single shared parameter as a std::pair
@@ -183,12 +220,22 @@ class shmem_executor
         remote_ptr<Result> remote_result(raw_ptr_to_result, 0);
         remote_ptr<Shared> remote_shared_parameter(raw_ptr_to_shared, 0);
 
-        // call the user function with the result & shared paramteter passed as remote_references
-        // XXX we should catch any exception thrown from this function
-        user_function(rank, *remote_result, *remote_shared_parameter);
+        bool caught_exception = 0;
 
-        // wait until all processing elements have executed the user_function
-        shmem_barrier_all();
+        // call the user function with the result & shared paramteter passed as remote_references
+        try
+        {
+          user_function(rank, *remote_result, *remote_shared_parameter);
+        }
+        catch(...)
+        {
+          // XXX consider actually capturing the exception here and then incorporating it into
+          //     the object given to the promise below
+          caught_exception = 1;
+        }
+
+        // synchronize and discover whether any agent caught an exception
+        bool some_process_caught_exception = cooperative_any(caught_exception);
 
         // rank 0 fulfills the promise
         if(rank == 0)
@@ -199,7 +246,15 @@ class shmem_executor
 
           interprocess_promise<Result> promise(os);
 
-          promise.set_value(*remote_result);
+          if(some_process_caught_exception)
+          {
+            // XXX incorporate more specific detail into the exception
+            promise.set_exception(interprocess_exception("Exception(s) encountered in execution agent(s)."));
+          }
+          else
+          {
+            promise.set_value(*remote_result);
+          }
         }
       }
 
