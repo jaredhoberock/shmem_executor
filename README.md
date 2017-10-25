@@ -5,7 +5,7 @@ An executor which creates execution on OpenSHMEM processing elements
 
 `shmem_executor` can create groups of concurrent execution agents executing on remote nodes:
 
-```
+```c++
 #include <iostream>
 #include <cassert>
 
