@@ -38,6 +38,7 @@
 #include <memory>
 #include <iostream>
 #include <future>
+#include <array>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -64,9 +65,7 @@ class file_descriptor_ostream : public std::ostream
 
         inline file_descriptor_buffer(int fd)
           : fd_(fd)
-        {
-          assert(fcntl(fd_, F_GETFD) != -1 || errno != EBADF);
-        }
+        {}
 
         inline virtual int_type overflow(int_type c)
         {
@@ -113,6 +112,11 @@ class file_descriptor_istream : public std::istream
       // set our buffer
       rdbuf(&buffer_);
     }
+    
+    inline int file_descriptor() const
+    {
+      return buffer_.file_descriptor();
+    }
 
   private:
     class file_descriptor_buffer : public std::streambuf
@@ -123,16 +127,35 @@ class file_descriptor_istream : public std::istream
         inline file_descriptor_buffer(int fd)
           : fd_(fd)
         {
-          setg(buffer_ + putback_size_,  // beginning of putback area
-               buffer_ + putback_size_,  // read position
-               buffer_ + putback_size_); // end position
+          setg(buffer_.data() + putback_size_,  // beginning of putback area
+               buffer_.data() + putback_size_,  // read position
+               buffer_.data() + putback_size_); // end position
+        }
+
+        file_descriptor_buffer(file_descriptor_buffer&& other)
+          : fd_(-1), buffer_(std::move(other.buffer_))
+        {
+          std::swap(fd_, other.fd_);
+
+          int eback_idx = other.eback() - other.buffer_.data();
+          int gptr_idx  = other.gptr() - other.buffer_.data();
+          int egptr_idx = other.egptr() - other.buffer_.data();
+
+          setg(buffer_.data() + eback_idx,
+               buffer_.data() + gptr_idx,
+               buffer_.data() + egptr_idx);
+        }
+        
+        int file_descriptor() const
+        {
+          return fd_;
         }
 
       protected:
         constexpr const static int putback_size_ = 4;
         constexpr const static int buffer_size_ = 1024;
 
-        char buffer_[putback_size_ + buffer_size_];
+        std::array<char,putback_size_ + buffer_size_> buffer_;
         int fd_;
 
         inline virtual int_type underflow()
@@ -146,25 +169,24 @@ class file_descriptor_istream : public std::istream
           // process size of putback area
           // use number of characters read
           // but at most size of putback area
-          int num_putback;
-          num_putback = gptr() - eback();
+          int num_putback = gptr() - eback();
           num_putback = std::min(num_putback, putback_size_);
 
           // copy up to putback_size_ characters previously read
           // into the putback area
-          std::memmove(buffer_ + (putback_size_ - num_putback), gptr() - num_putback, num_putback);
+          std::memmove(buffer_.data() + (putback_size_ - num_putback), gptr() - num_putback, num_putback);
 
           // read at most buffer_size_ new characters
-          int num = ::read(fd_, buffer_ + putback_size_, buffer_size_);
+          int num = ::read(fd_, buffer_.data() + putback_size_, buffer_size_);
           if(num <= 0)
           {
             return traits_type::eof();
           }
 
           // reset buffer pointers
-          setg(buffer_ + (putback_size_ + num_putback), // beginning of putback area
-               buffer_ + putback_size_,                 // read position
-               buffer_ + putback_size_ + num);          // end of buffer
+          setg(buffer_.data() + (putback_size_ - num_putback), // beginning of putback area
+               buffer_.data() + putback_size_,                 // read position
+               buffer_.data() + putback_size_ + num);          // end of buffer
 
           // return next character
           return traits_type::to_int_type(*gptr());
@@ -221,22 +243,18 @@ class interprocess_future
 {
   public:
     interprocess_future(int file_descriptor)
-      : file_descriptor_(file_descriptor), is_(file_descriptor), result_or_exception_(T())
+      : is_(file_descriptor), result_or_exception_(T())
     {}
 
-    interprocess_future(interprocess_future&& other)
-      : file_descriptor_(-1),
-        is_(std::move(other.is_)),
-        result_or_exception_(std::move(other.result_or_exception_))
-    {
-      std::swap(file_descriptor_, other.file_descriptor_);
-    }
+    interprocess_future(interprocess_future&&) = default;
+
+    interprocess_future(const interprocess_future&) = delete;
 
     ~interprocess_future()
     {
-      if(file_descriptor_ >= 0)
+      if(is_.file_descriptor() >= 0)
       {
-        ::close(file_descriptor_);
+        ::close(is_.file_descriptor());
       }
     }
 
@@ -292,7 +310,6 @@ class interprocess_future
     }
 
   private:
-    int file_descriptor_;
     file_descriptor_istream is_;
     optional<variant<T,interprocess_exception>> result_or_exception_;
 };
