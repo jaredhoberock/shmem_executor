@@ -86,4 +86,12 @@ $ oshc++ -std=c++11 demo.cpp -o demo
 $ srun --pty --qos=big -n 4 /bin/bash -i
 # run the demo program
 $ ./demo
+hello world from processing element 0, received 13
+hello world from processing element 1, received 13
+hello world from processing element 0, received 13
+hello world from processing element 1, received 13
+hello world from processing element 0, received 13
+hello world from processing element 1, received 13
+Caught exception: [Exception(s) encountered in execution agent(s).]
+OK
 ```
